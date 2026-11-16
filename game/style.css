@@ -1,0 +1,67 @@
+/* Outer UI colors. Phase 4 maps these to Telegram themeParams. The canvas stays "paper". */
+:root {
+    --outer-bg: #e8e5dc;
+    --outer-text: #1b1b1b;
+  }
+  
+  * { box-sizing: border-box; }
+  
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--outer-bg);
+    color: var(--outer-text);
+    overscroll-behavior: none;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  
+  body {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  
+  #game {
+    display: block;
+    touch-action: none;
+    background: #fbfaf5;
+  }
+  
+  #rotate-hint {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    background: var(--outer-bg);
+    font-size: 22px;
+    font-weight: 700;
+    text-align: center;
+  }
+  #rotate-hint.show { display: flex; }
+  
+  /* CSS-drawn phone outline, no assets. */
+  #rotate-hint .phone {
+    width: 44px;
+    height: 76px;
+    border: 4px solid currentColor;
+    border-radius: 10px;
+    animation: tilt 1.6s ease-in-out infinite;
+  }
+  @keyframes tilt {
+    0%, 20% { transform: rotate(-90deg); }
+    60%, 100% { transform: rotate(0deg); }
+  }
