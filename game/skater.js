@@ -17,11 +17,18 @@ const AIR    = P([0,-34, 5,-63, 8,-77, -12,-52, -24,-58, 18,-54, 30,-60, -15,-22
 const LAND   = P([0,-24, 8,-48, 12,-60, -4,-36, -14,-28, 18,-38, 28,-30, -18,-12, -14,-2, 20,-12, 14,-2]);
 const PUSH_A = P([2,-34, 9,-62, 12,-76, -4,-50, -14,-42, 19,-52, 28,-44, -4,-12, -6,12, 18,-18, 10,-2]);
 const PUSH_B = P([0,-36, 8,-64, 11,-78, -8,-52, -18,-44, 18,-54, 27,-46, -18,-16, -30,10, 17,-19, 10,-2]);
+// Phase 2: 50-50 grind (low, arms out for balance) and a sprawled crash pose.
+const GRIND  = P([0,-32, 6,-60, 9,-74, -14,-54, -30,-58, 20,-56, 36,-60, -15,-17, -14,-2, 17,-17, 14,-2]);
+const CRASH  = P([0,-30, 2,-60, 3,-74, -16,-56, -28,-68, 20,-54, 34,-64, -14,-14, -24,-2, 16,-16, 28,-4]);
+// Phase 3 tricks: kickflip (feet lifted off the flipping board), grab (front hand on the deck).
+const KICKFLIP = P([0,-40, 4,-70, 6,-84, -12,-60, -24,-64, 16,-62, 28,-66, -16,-26, -16,-14, 16,-28, 14,-14]);
+const GRAB   = P([0,-26, 8,-48, 13,-60, -12,-42, -24,-50, 14,-28, 22,-3, -14,-16, -14,-2, 16,-18, 14,-2]);
+const T_FLIP = 1, T_SPIN = 2, T_GRAB = 3; // same ids as scoring.js
 
-// Per-state easing rates (higher = snappier) and board tilt targets (negative = nose up).
-const RATE = { idle: 8, roll: 12, pop: 30, air: 12, land: 35 };
-const ANGLE = { idle: 0, roll: 0, pop: -0.38, air: 0, land: 0 };
-const ANGLE_RATE = { idle: 10, roll: 10, pop: 40, air: 5, land: 20 };
+// Per-state easing rates (higher = snappier) and board tilt offsets (negative = nose up).
+const RATE = { idle: 8, roll: 12, pop: 30, air: 12, land: 35, grind: 20, crash: 10 };
+const ANGLE = { idle: 0, roll: 0, pop: -0.38, air: 0, land: 0, grind: 0, crash: 0 };
+const ANGLE_RATE = { idle: 10, roll: 10, pop: 40, air: 5, land: 20, grind: 25, crash: 0 };
 
 const pts = new Float32Array(12); // scratch for polylines (max 6 points)
 
@@ -49,7 +56,13 @@ export class Skater {
     this.pushClock = 0;
     this.landDepth = 1;
     this.boardAngle = 0;
+    this.groundAngle = 0;
     this.wheelSpin = 0;
+    this.trick = 0;       // T_* id, set every step by main.js from scoring.js
+    this.trickPhase = 0;  // 0..1
+    // Crash tumble state.
+    this.tumble = 0; this.tumbleVel = 0; this.drop = 0;
+    this.boardDX = 0; this.boardDY = 0; this.boardVX = 0; this.boardSpinV = 0;
     this.pose.set(CROUCH);
   }
 
@@ -73,6 +86,29 @@ export class Skater {
     this.setState('land');
   }
 
+  grind() { this.setState('grind'); }
+
+  /** Rolled off an edge (box, rail end, kicker lip). */
+  fall() { if (this.state !== 'crash') this.setState('air'); }
+
+  /** Current trick (0 = none) and its 0..1 progress, for animation only. */
+  setTrick(type, phase) { this.trick = type; this.trickPhase = phase; }
+
+  /** Slope under the board, radians (screen space, negative = nose up). */
+  setGroundAngle(a) { this.groundAngle = a; }
+
+  /** Start the tumble. boardVX = initial board slide speed (negative = bounced back). */
+  crash(boardVX) {
+    this.setState('crash');
+    this.tumble = 0;
+    this.tumbleVel = 10;            // decays to ~2 full turns' worth: one flip, then lying down
+    this.drop = 0;
+    this.boardDX = 0;
+    this.boardDY = 0;
+    this.boardVX = boardVX;
+    this.boardSpinV = Math.PI * 6;  // decays to about one full board flip
+  }
+
   update(dt, speed) {
     this.clock += dt;
     this.stateTime += dt;
@@ -92,8 +128,8 @@ export class Skater {
       case 'roll': {
         this.pushClock += dt;
         const p = this.pushClock % PUSH_INTERVAL;
-        if (p < PUSH_DURATION) {
-          // Push: foot down (A), sweep back (B), back on the board.
+        if (p < PUSH_DURATION && this.groundAngle === 0) {
+          // Push: foot down (A), sweep back (B), back on the board. Not on slopes.
           const f = p / PUSH_DURATION;
           if (f < 0.25) lerpInto(t, ROLL, PUSH_A, f / 0.25);
           else if (f < 0.75) lerpInto(t, PUSH_A, PUSH_B, (f - 0.25) / 0.5);
@@ -106,19 +142,48 @@ export class Skater {
       case 'pop': t.set(POP); break;
       case 'air': t.set(AIR); break;
       case 'land': lerpInto(t, ROLL, LAND, this.landDepth); break;
+      case 'grind': t.set(GRIND); break;
+      case 'crash': t.set(CRASH); break;
+    }
+    if (this.trick && (this.state === 'air' || this.state === 'pop')) {
+      if (this.trick === T_FLIP) t.set(KICKFLIP);
+      else if (this.trick === T_GRAB) lerpInto(t, AIR, GRAB, this.trickPhase);
     }
 
     // Frame-rate independent exponential easing toward the target pose.
     const k = 1 - Math.exp(-RATE[this.state] * dt);
     const pose = this.pose;
     for (let i = 0; i < N; i++) pose[i] += (t[i] - pose[i]) * k;
-    const ka = 1 - Math.exp(-ANGLE_RATE[this.state] * dt);
-    this.boardAngle += (ANGLE[this.state] - this.boardAngle) * ka;
+
+    if (this.state === 'crash') {
+      this.tumble += this.tumbleVel * dt;
+      this.tumbleVel *= Math.exp(-1.3 * dt);
+      this.drop = Math.min(26, this.drop + 45 * dt); // sink toward the ground while lying down
+      this.boardDX += this.boardVX * dt;
+      this.boardVX *= Math.exp(-1.5 * dt);
+      this.boardAngle += this.boardSpinV * dt;
+      this.boardSpinV *= Math.exp(-3 * dt);
+    } else {
+      const onGround = this.state !== 'air' && this.state !== 'pop';
+      const target = ANGLE[this.state] + (onGround || this.state === 'pop' ? this.groundAngle : 0);
+      const ka = 1 - Math.exp(-ANGLE_RATE[this.state] * dt);
+      this.boardAngle += (target - this.boardAngle) * ka;
+    }
   }
 
   /** (sx, sy) = deck-top center in logical screen coords. */
   draw(ctx, sx, sy) {
+    const crashed = this.state === 'crash';
     const c = Math.cos(this.boardAngle), s = Math.sin(this.boardAngle);
+    // 360 spin: squash x around the skater (cos of the turn). The path is built under the
+    // transform but stroked after restore(), so line widths stay uniform.
+    let spinK = 1;
+    if (this.trick === T_SPIN && !crashed) {
+      spinK = Math.cos(this.trickPhase * Math.PI * 2);
+      if (Math.abs(spinK) < 0.08) spinK = spinK < 0 ? -0.08 : 0.08;
+    }
+    // Kickflip: the deck's vertical profile scales by cos of the flip (wheels end up on top halfway).
+    const flipK = this.trick === T_FLIP && !crashed ? Math.cos(this.trickPhase * Math.PI * 2) : 1;
     // Pass 0: main marker stroke. Pass 1: faint thin offset stroke for a hand-drawn feel.
     for (let pass = 0; pass < 2; pass++) {
       const main = pass === 0;
@@ -126,24 +191,38 @@ export class Skater {
       const kb = main ? 0 : 1000; // different jitter keys for the second pass
       setInk(ctx, main ? STROKE : STROKE * 0.4, INK, main ? 1 : 0.3);
       ctx.beginPath();
-      this.boardPath(ctx, x, y, c, s, kb, main);
-      this.bodyPath(ctx, x, y, c, s, kb);
+      if (spinK !== 1) { ctx.save(); ctx.translate(sx, 0); ctx.scale(spinK, 1); ctx.translate(-sx, 0); }
+      this.boardPath(ctx, x + this.boardDX, y + this.boardDY, c, s, kb, main, flipK);
+      if (!crashed) this.bodyPath(ctx, x, y, c, s, kb);
+      if (spinK !== 1) ctx.restore();
+      ctx.stroke();
+      if (!crashed) continue;
+      // Tumbling body, detached from the board: rotate around the hip and sink.
+      const hx = x + this.pose[0], hy = y + this.pose[1];
+      ctx.save();
+      ctx.translate(hx, hy + this.drop);
+      ctx.rotate(this.tumble);
+      ctx.translate(-hx, -hy);
+      ctx.beginPath();
+      this.bodyPath(ctx, x, y, 1, 0, kb);
+      ctx.restore();
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
 
-  boardPath(ctx, x, y, c, s, kb, main) {
-    // Deck with kicked tail and nose.
-    rotTo(0, x, y, -30, -6, c, s);
+  boardPath(ctx, x, y, c, s, kb, main, flipK = 1) {
+    // Deck with kicked tail and nose. flipK scales the vertical profile (kickflip).
+    rotTo(0, x, y, -30, -6 * flipK, c, s);
     rotTo(1, x, y, -24, 0, c, s);
     rotTo(2, x, y, 24, 0, c, s);
-    rotTo(3, x, y, 30, -6, c, s);
+    rotTo(3, x, y, 30, -6 * flipK, c, s);
     sketchPolyline(ctx, pts, 4, 10 + kb, JITTER * 0.6);
     for (let w = -1; w <= 1; w += 2) {
       const lx = w * TRUCK_X;
       const tx = x + lx * c, ty = y + lx * s; // truck top on the deck
-      const wx = x + lx * c - WHEEL_Y * s, wy = y + lx * s + WHEEL_Y * c;
+      const wy0 = WHEEL_Y * flipK;
+      const wx = x + lx * c - wy0 * s, wy = y + lx * s + wy0 * c;
       sketchLine(ctx, tx, ty, wx, wy, 20 + w + kb, 0.4);
       sketchCircle(ctx, wx, wy, WHEEL_R, 30 + w + kb, 0.6);
       if (main) {

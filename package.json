@@ -1,0 +1,9 @@
+{
+  "name": "sketch-skate",
+  "private": true,
+  "type": "module",
+  "description": "No dependencies. 'type: module' lets Node run the game modules in tests.",
+  "scripts": {
+    "test": "node tests/scoring.mjs && node tests/fairness.mjs"
+  }
+}
