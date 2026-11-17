@@ -8,6 +8,10 @@ Config comes from the environment (a local .env file is loaded automatically):
   BOT_TOKEN     token from @BotFather
   MINI_APP_URL  https address of the hosted game/ folder
 Uses long polling, so it needs no public server of its own.
+
+Optional network settings for slow or filtered connections (all in .env, all optional):
+  TELEGRAM_PROXY  proxy address, e.g. http://127.0.0.1:7890 or socks5://127.0.0.1:1080
+  FORCE_IPV4      set to 1 to connect over IPv4 only (helps when IPv6 hangs; ignored when a proxy is set)
 """
 import asyncio
 import html
@@ -24,7 +28,9 @@ from telegram import (
     WebAppInfo,
 )
 from telegram.constants import ChatType, ParseMode
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.request import HTTPXRequest
 
 GAME_NAME = "Sketch Skate"
 PLAY_LABEL = "\U0001F6F9 Play Sketch Skate"  # skateboard emoji
@@ -50,6 +56,37 @@ def read_config() -> tuple[str, str]:
     return token, url
 
 
+def make_request(read_timeout: float = 20.0) -> HTTPXRequest:
+    """HTTP client with generous timeouts (the library default is only 5 s, too short on slow networks)."""
+    proxy = os.environ.get("TELEGRAM_PROXY", "").strip() or None
+    extra: dict = {}
+    if proxy is None and os.environ.get("FORCE_IPV4", "").strip() in ("1", "true", "yes"):
+        import httpx  # installed together with python-telegram-bot
+
+        extra["httpx_kwargs"] = {"transport": httpx.AsyncHTTPTransport(local_address="0.0.0.0")}
+    return HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=20.0,
+        read_timeout=read_timeout,
+        write_timeout=20.0,
+        pool_timeout=20.0,
+        proxy=proxy,
+        **extra,
+    )
+
+
+async def reply(message, text: str, **kwargs):
+    """reply_text with up to 3 attempts, so one slow connection does not lose the answer."""
+    for attempt in range(1, 4):
+        try:
+            return await message.reply_text(text, **kwargs)
+        except (TimedOut, NetworkError):
+            if attempt == 3:
+                raise
+            log.warning("Telegram did not answer (attempt %d/3), retrying...", attempt)
+            await asyncio.sleep(1.5 * attempt)
+
+
 def play_keyboard(app_url: str) -> InlineKeyboardMarkup:
     """One button that opens the Mini App in Telegram."""
     return InlineKeyboardMarkup([[InlineKeyboardButton(PLAY_LABEL, web_app=WebAppInfo(url=app_url))]])
@@ -63,10 +100,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Web App buttons only work in private chats, so send groups to the bot's own chat.
     if chat.type != ChatType.PRIVATE:
         username = context.bot.username
-        await message.reply_text(f"Open a private chat with @{username} to play {GAME_NAME}.")
+        await reply(message, f"Open a private chat with @{username} to play {GAME_NAME}.")
         return
     name = html.escape(user.first_name) if user and user.first_name else "skater"
-    await message.reply_text(
+    await reply(
+        message,
         f"Hey {name}! \U0001F44B Welcome to <b>{GAME_NAME}</b>, a hand-drawn skateboarding game.\n"
         "Tap the button below to start rolling.",
         parse_mode=ParseMode.HTML,
@@ -79,7 +117,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = update.effective_message
     if message is None:
         return
-    await message.reply_text(
+    await reply(
+        message,
         f"{GAME_NAME} controls:\n"
         "\u2022 Tap anywhere: ollie (hold a little longer to jump higher)\n"
         "\u2022 Swipe up in the air: kickflip\n"
@@ -102,11 +141,24 @@ async def post_init(application: Application) -> None:
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if isinstance(context.error, NetworkError):  # includes TimedOut
+        log.warning(
+            "Network problem talking to Telegram (%s). Check your internet connection; if it keeps happening "
+            "set FORCE_IPV4=1 or TELEGRAM_PROXY in .env.", context.error,
+        )
+        return
     log.error("Unhandled error", exc_info=context.error)
 
 
 def build_application(token: str, app_url: str) -> Application:
-    application = Application.builder().token(token).post_init(post_init).build()
+    application = (
+        Application.builder()
+        .token(token)
+        .request(make_request())
+        .get_updates_request(make_request(read_timeout=30.0))
+        .post_init(post_init)
+        .build()
+    )
     application.bot_data["app_url"] = app_url
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
@@ -122,7 +174,10 @@ def main() -> None:
     # Python 3.14+ no longer creates an event loop automatically, and python-telegram-bot's
     # run_polling() asks for the current one. Create it here so every Python version works.
     asyncio.set_event_loop(asyncio.new_event_loop())
-    build_application(token, app_url).run_polling(allowed_updates=Update.ALL_TYPES)
+    build_application(token, app_url).run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        bootstrap_retries=-1,  # keep retrying if Telegram is unreachable at startup
+    )
 
 
 if __name__ == "__main__":
