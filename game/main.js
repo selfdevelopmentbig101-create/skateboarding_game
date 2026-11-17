@@ -1,5 +1,6 @@
 // main.js: layout, fixed-timestep loop, game flow (menu, tutorial, play, pause, settings, crash,
-// game over), input routing, scoring hookup, ?debug=1 overlay and dev autoplay (?autoplay=1).
+// game over), input routing, scoring hookup, Telegram hookup (Phase 4), ?debug=1 overlay and
+// dev autoplay (?autoplay=1). ?tgmock=1 loads dev-mock.js (a fake Telegram.WebApp, dev only).
 import * as C from './config.js';
 import { setBoil, initInk, drawGround, drawShadow } from './draw.js';
 import { Skater, DECK_ABOVE_GROUND } from './skater.js';
@@ -12,10 +13,12 @@ import { createInput, lockGestures } from './input.js';
 import { Scoring, T_FLIP, T_SPIN, T_GRAB } from './scoring.js';
 import { UI } from './ui.js';
 import * as storage from './storage.js';
+import * as tg from './tg.js';
 
 const params = new URLSearchParams(location.search);
 const DEBUG = params.get('debug') === '1';
 const AUTOPLAY = params.get('autoplay') === '1';
+const TGMOCK = params.get('tgmock') === '1';
 const FIXED_SEED = params.has('seed') ? Number(params.get('seed')) | 0 : 0;
 
 const canvas = document.getElementById('game');
@@ -66,31 +69,42 @@ const crashedEvt = { reason: 0, distance: 0 };
 world.on('obstacleCleared', (e) => { clearedCount++; scoring.obstacleCleared(e, body.onGround); });
 world.on('grindTick', (e) => scoring.grindTick(e.dist));
 
-// Phase 4: tg.js returns Telegram's first_name here.
-function getUserName() { return 'Skater'; }
-
-// Saved data. The game never waits for it; values apply when they arrive.
-storage.getBest().then((v) => { best = Math.max(best, v); });
-storage.getFlag('tutorialDone').then((v) => { tutorialDone = tutorialDone || v; });
-storage.getSetting('trickButtons', true).then((v) => { trickButtons = !!v; refreshButtons(); });
-
 // Dev-only ideal-timing player; never loaded unless ?autoplay=1.
 let planner = null;
 if (AUTOPLAY) import('./autoplay.js').then((m) => { planner = new m.Planner(); });
 
+// ---------- Telegram boot (Phase 4) ----------
+// ?tgmock=1 installs a fake Telegram.WebApp first. Nothing here waits on Telegram or storage:
+// the game is playable immediately and saved values apply when they arrive.
+const mockReady = TGMOCK ? import('./dev-mock.js').catch((e) => console.warn('tgmock failed', e)) : Promise.resolve();
+mockReady.then(boot);
+
+function boot() {
+  tg.init({ onLayout: requestLayout, onDeactivated: pauseGame });
+  userName = tg.userName();
+  requestLayout(); // safe areas and viewport height may differ now that Telegram is known
+  storage.getBest().then((v) => { best = Math.max(best, v); }); // CloudStorage gives up after 1.5 s
+  storage.getFlag('tutorialDone').then((v) => { tutorialDone = tutorialDone || v; });
+  storage.getSetting('trickButtons', true).then((v) => { trickButtons = !!v; refreshButtons(); });
+}
+
+/** First name from Telegram (display only), "Skater" elsewhere. Cached: it is read every frame. */
+let userName = 'Skater';
+function getUserName() { return userName; }
+
 // ---------- Layout ----------
-/** Device safe-area insets in CSS px. Phase 4: tg.js merges Telegram's insets in here. */
+/** Device safe-area insets in CSS px: env(safe-area-inset-*) merged with Telegram's insets. */
 function readInsets() {
   const cs = getComputedStyle(probe);
-  return {
+  return tg.mergeInsets({
     top: parseFloat(cs.paddingTop) || 0, right: parseFloat(cs.paddingRight) || 0,
     bottom: parseFloat(cs.paddingBottom) || 0, left: parseFloat(cs.paddingLeft) || 0,
-  };
+  });
 }
 
 function layout() {
   needsLayout = false;
-  const w = window.innerWidth, h = window.innerHeight; // Phase 4: viewportStableHeight in Telegram
+  const w = window.innerWidth, h = tg.viewHeight(window.innerHeight); // stable height in Telegram
   view.coarse = window.matchMedia('(pointer: coarse)').matches;
   blocked = view.coarse && w > h * 1.05; // touch device in landscape
   hintEl.classList.toggle('show', blocked);
@@ -129,7 +143,7 @@ function layout() {
   hud.coarse = view.coarse;
 }
 
-const requestLayout = () => { needsLayout = true; };
+function requestLayout() { needsLayout = true; }
 window.addEventListener('resize', requestLayout);
 window.addEventListener('orientationchange', () => {
   requestLayout();
@@ -140,12 +154,22 @@ if (window.visualViewport) window.visualViewport.addEventListener('resize', requ
 // ---------- Game flow ----------
 function setMode(m) {
   mode = m;
+  // The "close this app?" prompt is only wanted while a run is in progress.
+  tg.setClosingConfirmation(m === 'playing' || m === 'paused' || m === 'crashed' ||
+    (m === 'settings' && settingsReturn === 'paused'));
   refreshButtons();
 }
 
 function refreshButtons() {
   const screen = mode === 'gameover' && !overButtons ? 'crashed' : mode;
   ui.show(screen, { trickButtons, leaderboard: C.LEADERBOARD_URL !== '' });
+  // Telegram's MainButton doubles as "Play again" (the in-canvas button stays for browsers).
+  if (mode === 'gameover' && overButtons) tg.showMainButton(C.TG_MAIN_BUTTON_TEXT, onMainButton);
+  else tg.hideMainButton();
+}
+
+function onMainButton() {
+  if (mode === 'gameover') startRun();
 }
 
 function startRun() {
@@ -197,6 +221,7 @@ function doJump() {
   if (!jump(body)) return false;
   scoring.takeoff();
   skater.jump();
+  tg.impact('light');
   jumpHeld = input.isHeld();
   bufferT = 0;
   return true;
@@ -232,6 +257,7 @@ function crash() {
   grabSrc = '';
   scoring.crashed();
   skater.setTrick(0, 0);
+  tg.notify('error');
   const face = body.crash === CRASH_FACE;
   skater.crash(face ? -0.2 * body.speed : 0.6 * body.speed);
   body.speed *= face ? -0.25 : 0.3; // bounce off walls, keep sliding into gaps
@@ -244,15 +270,17 @@ function crash() {
 function toGameOver() {
   const final = scoring.scoreInt();
   newBest = final > best && final > 0;
-  if (newBest) { best = final; storage.setBest(final); }
+  if (newBest) { best = final; storage.setBest(final); tg.notify('success'); }
   overT = 0;
   overButtons = false;
   setMode('gameover');
 }
 
 async function shareScore() {
-  // Phase 4: inside Telegram this opens Telegram's share sheet with the Mini App link instead.
   const text = `I scored ${scoring.scoreInt().toLocaleString('en-US')} in ${C.GAME_NAME}! \u{1F6F9} Can you beat me?`;
+  // Inside Telegram: the native share sheet with the Mini App link.
+  if (tg.share(text, tg.miniAppLink())) return;
+  // Outside Telegram: Web Share, then the clipboard.
   const url = location.origin + location.pathname;
   try {
     if (navigator.share) { await navigator.share({ title: C.GAME_NAME, text, url }); return; }
@@ -270,6 +298,7 @@ async function shareScore() {
 // ---------- Input routing ----------
 function onPress(cx, cy, gameBusy) {
   if (blocked) return '';
+  tg.tryFullscreen(); // first tap: ask Telegram for fullscreen (no-op after the first call)
   const x = (cx - view.left) / view.scale, y = cy / view.scale + view.viewTop;
   const id = ui.hit(x, y);
   if (id) { pressButton(id); return 'ui'; }
@@ -351,7 +380,8 @@ function onKey(code, down) {
 lockGestures();
 const input = createInput(window, { onPress, onGameDown, onSwipe, onRelease, onKey }, () => view.scale);
 
-// Auto-pause when the app goes to the background. Phase 4 also pauses on Telegram 'deactivated'.
+// Auto-pause when the app goes to the background. Telegram's 'deactivated' event (8.0+) also
+// pauses, wired in boot().
 document.addEventListener('visibilitychange', () => { if (document.hidden) pauseGame(); });
 
 // ---------- Simulation ----------
@@ -367,7 +397,9 @@ function stepPlaying(dt) {
   if (r === R_CRASHED) { crash(); return; }
   if (r === R_LANDED) {
     if (scoring.isMidTrick()) { body.crash = CRASH_TRICK; crash(); return; } // landed mid-trick
-    scoring.landed(Math.abs(skater.boardAngle) < C.LAND_ANGLE_TOL);
+    const clean = Math.abs(skater.boardAngle) < C.LAND_ANGLE_TOL;
+    scoring.landed(clean);
+    if (clean) tg.impact('medium');
     onLanded();
   } else if (r === R_LEFT) {
     scoring.takeoff();
@@ -450,6 +482,7 @@ function drawDebug() {
   ctx.fillText(`speed ${Math.round(body.speed)}  dist ${Math.floor(body.x / 50)}m  t ${world.time.toFixed(1)}s`, 8, y + 15);
   ctx.fillText(`difficulty ${world.difficulty(world.time).toFixed(2)}  stage ${world.stageAt(world.time)}  cleared ${clearedCount}`, 8, y + 30);
   ctx.fillText(`next ${next}  pending ${scoring.pending}`, 8, y + 45);
+  ctx.fillText(`telegram ${tg.status()}${TGMOCK ? ' (mock)' : ''}`, 8, y + 60);
 }
 
 // ---------- Loop ----------

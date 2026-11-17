@@ -104,3 +104,13 @@ export const LAND_ANGLE_TOL = 0.35; // board tilt (rad) still counted as a clean
 export const SWIPE_MIN = 30;        // swipe threshold, logical px
 export const TOUCH_MIN_CSS = 44;    // minimum button size, CSS px
 export const POPUP_TIME = 1.1;      // floating score text lifetime, s
+
+// --- Telegram (Phase 4) ---
+export const BOT_USERNAME = '<YOUR_BOT_USERNAME>';       // set after /newbot in @BotFather
+export const APP_SHORT_NAME = '<YOUR_APP_SHORT_NAME>';   // set after /newapp in @BotFather
+export const MINI_APP_LINK = `https://t.me/${BOT_USERNAME}/${APP_SHORT_NAME}`; // link put in shared messages
+export const TG_STORAGE_TIMEOUT = 1500; // ms to wait for one CloudStorage call before giving up
+export const TG_FULLSCREEN = true;      // ask for fullscreen on the first tap (mobile clients, Bot API 8.0+)
+export const TG_USE_MAIN_BUTTON = true; // show Telegram's MainButton as "Play again" on game over
+export const TG_MAIN_BUTTON_TEXT = '\u{1F6F9} Play again';
+export const NAME_MAX = 20;             // max characters of the first name drawn on game over

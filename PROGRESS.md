@@ -4,29 +4,38 @@
 - [x] Phase 1: Foundation (canvas, sketch renderer, skater on flat ground)
 - [x] Phase 2: World (obstacles, collision, crash, fair generation, difficulty)
 - [x] Phase 3: Tricks, scoring, combos, HUD and screens
-- [ ] Phase 4: Telegram  - [ ] Phase 5: Bot/README  - [ ] Phase 6: Leaderboard (OPTIONAL)  - [ ] Phase 7: Audit
+- [x] Phase 4: Telegram integration
+- [ ] Phase 5: Bot/README  - [ ] Phase 6: Leaderboard (OPTIONAL)  - [ ] Phase 7: Audit
 
 ## Files
-- package.json: no dependencies; "type": "module" so Node can run game modules; `npm test` runs both tests.
+- package.json: no dependencies; "type": "module" so Node can run game modules; `npm test` runs all four tests.
 - tests/fairness.mjs: generator fairness simulation (ramp + max difficulty, many seeds) with the autoplay bot.
 - tests/scoring.mjs: unit tests for trick timing, banking, combo, grab, stairs, grind, distance, crash.
-- game/index.html: page shell, viewport meta, canvas, rotate-hint overlay, loads main.js (unchanged since Phase 1).
-- game/style.css: full-screen no-zoom/no-scroll layout, letterbox background, rotate hint (unchanged).
-- game/config.js: every tunable constant (layout, loop, physics, collision, difficulty, obstacles, tricks, scoring, ink).
-- game/main.js: layout + safe-area probe, fixed 60 Hz loop + interpolation, game flow (menu, tutorial,
-  playing, paused, settings, crashed, gameover), input routing, scoring hookup, share, debug/autoplay flags.
-- game/ui.js: canvas UI: HUD (score, best, combo + timer bar, pause), trick buttons, start / tutorial /
-  pause / settings / game-over screens, popups, toasts, button hit-testing.
+- tests/tg.mjs: (Phase 4) tg.js + dev-mock.js with a fake browser: plain-browser no-ops, init calls, version gating
+  (8.0 / 7.0 / 6.0), fullscreen, insets merge, theme, deactivated, closing confirmation, MainButton, name, share
+  link, CloudStorage round trip and timeout.
+- tests/storage.mjs: (Phase 4) best = max(localStorage, CloudStorage), never lowered, slow cloud falls back.
+- game/index.html: page shell, viewport meta, canvas, rotate-hint overlay; Phase 4 loads telegram-web-app.js in
+  <head> before main.js.
+- game/style.css: full-screen no-zoom/no-scroll layout, letterbox background, rotate hint (unchanged). The outer
+  colours come from --outer-bg / --outer-text, which tg.js overwrites from themeParams inside Telegram.
+- game/config.js: every tunable constant (layout, loop, physics, collision, difficulty, obstacles, tricks,
+  scoring, ink, Telegram).
+- game/main.js: layout + safe-area probe, fixed 60 Hz loop + interpolation, game flow (menu, tutorial, playing,
+  paused, settings, crashed, gameover), input routing, scoring hookup, Telegram boot/haptics/MainButton/share,
+  debug/autoplay/tgmock flags.
+- game/tg.js: (Phase 4) all Telegram calls, guarded and version-checked; no-ops outside Telegram.
+- game/dev-mock.js: (Phase 4, DEV ONLY) fake Telegram.WebApp, imported by main.js only with ?tgmock=1.
+- game/ui.js: canvas UI: HUD, trick buttons, start / tutorial / pause / settings / game-over screens, popups,
+  toasts, hit-testing (unchanged in Phase 4).
 - game/scoring.js: trick state (kickflip, 360 spin, grab), pending points, banking, combo multiplier.
-- game/storage.js: async getBest/setBest, getFlag/setFlag, getSetting/setSetting on localStorage.
-- game/input.js: Pointer Events (UI vs gameplay pointers, swipe detection) + keyboard.
+- game/storage.js: async getBest/setBest (localStorage + Telegram CloudStorage), getFlag/setFlag, getSetting/setSetting.
+- game/input.js: Pointer Events (UI vs gameplay pointers, swipe detection) + keyboard (unchanged).
 - game/draw.js: seeded hash, boil, sketchLine/Polyline/Circle, ground with gap holes, shadow.
-- game/skater.js: stick figure + poses (crouch, roll/push, pop, air, land, grind, crash, kickflip, grab),
-  kickflip board flip, 360 spin squash, crash tumble.
-- game/physics.js: body integration vs world (two-truck support, nose face hits, kicker launch, rails),
-  jump with hold-to-extend, crash slide, airTime() helper.
-- game/world.js: obstacle pool, seeded fair generator, difficulty ramp + stages, combos, support/face
-  queries, events, obstacle drawing, parallax doodles, particle pool.
+- game/skater.js: stick figure + poses, kickflip board flip, 360 spin squash, crash tumble.
+- game/physics.js: body integration vs world, jump with hold-to-extend, crash slide, airTime() helper.
+- game/world.js: obstacle pool, seeded fair generator, difficulty ramp + stages, events, obstacle drawing,
+  parallax doodles, particle pool.
 - game/autoplay.js: DEV ONLY ideal-timing bot (?autoplay=1 and the fairness test).
 
 ## config.js constants
@@ -47,38 +56,65 @@ Tricks/scoring: LEADERBOARD_URL='', FLIP_TIME=0.42, SPIN_TIME=0.55, GRAB_RELEASE
 Animation: POP_TIME=0.12, LAND_TIME=0.18, PUSH_INTERVAL=2.4, PUSH_DURATION=0.75
 Ink: PAPER, INK, GREY_INK, BG_INK, STROKE=3.6, JITTER=1.3, BOIL_FPS=10, FONT_STACK
 Ground/bg: GROUND_SEG=40, GROUND_WOBBLE=2.5, MARK_SPACING=64, PARALLAX_CLOUDS=0.08, PARALLAX_CITY=0.3, PARALLAX_LAMPS=0.6
+Telegram (Phase 4): BOT_USERNAME='<YOUR_BOT_USERNAME>', APP_SHORT_NAME='<YOUR_APP_SHORT_NAME>',
+  MINI_APP_LINK=`https://t.me/${BOT_USERNAME}/${APP_SHORT_NAME}`, TG_STORAGE_TIMEOUT=1500, TG_FULLSCREEN=true,
+  TG_USE_MAIN_BUTTON=true, TG_MAIN_BUTTON_TEXT='🛹 Play again', NAME_MAX=20
 
 ## Decisions and assumptions
 - Logical units: world height 640 always visible; width from aspect, min 340 (extra sky on narrow phones),
   canvas capped at MAX_ASPECT and letterboxed. Touch landscape: rotate hint, sim frozen.
 - Physics y is height above ground (up = +); screen y = GROUND_Y - 12 - y.
-- Jump fires on press; holding while rising lowers gravity for up to JUMP_HOLD_MAX s (~+24% apex). 0.1 s buffer.
-- Board support = higher of the two trucks; faces are hit by the nose. Obstacle rules and fairness as in Phase 2.
-- Events on the World: obstacleCleared {type, touched, touchedSteps, obstacle}, grindTick {dist},
-  landed {impact, surface}, crashed {reason, distance}. Payloads are reused objects.
-- All UI is drawn on the canvas (sketch style) and hit-tested in ui.js; no HTML buttons. Safe-area insets come
-  from a hidden probe element using env(safe-area-inset-*). Phase 4 merges Telegram insets in readInsets().
-- Input: a touch that starts on a button belongs to the UI (no jump). Gameplay touch: press = ollie, a 30 px
-  swipe = trick (one per gesture). Swiping from the ground therefore does ollie + trick. Trick buttons and
-  arrow keys also ollie first when on the ground. Grab lasts while the finger/button/key is held.
-- Scoring: trick and obstacle points go to "pending"; a clean landing banks them x combo after BANK_DELAY
-  (or at the next takeoff). Popup shows base points + multiplier, e.g. "+150 360 SPIN x3". Each bank raises
-  the combo (cap 10); more than 1 s on flat ground resets it (box tops, rails, stairs and kickers do not).
-  Landing during a trick (including letting go of a grab) = crash. Clean = board within 0.35 rad of level;
-  otherwise "SKETCHY" (points and combo lost). Ollie over gap/box/rail = 25. Stairs: whole set jumped =
-  100 + 20/step. Grind = 0.2 pts/px, banked on the landing after the rail. Distance = 1 pt per 50 px.
-- Tutorial shows once (flag 'tutorialDone'); trick buttons setting saved ('trickButtons', default ON).
-- Pause: button, Esc/P, and automatically on visibilitychange. Paused and settings freeze the simulation.
-- getUserName() returns "Skater" and Share uses navigator.share, then clipboard; Phase 4 replaces both.
-  Leaderboard button only appears if LEADERBOARD_URL is set (Phase 6).
+- Jump fires on press; holding while rising lowers gravity for up to JUMP_HOLD_MAX s. 0.1 s buffer.
+- Events on the World: obstacleCleared, grindTick, landed, crashed (payloads are reused objects).
+- All UI is drawn on the canvas and hit-tested in ui.js; no HTML buttons.
+- Scoring, tricks, combo, tutorial, pause: as described in Phase 3 (unchanged).
+- Phase 4, boot order: main.js never waits for Telegram or storage. With ?tgmock=1 it first imports dev-mock.js,
+  then calls tg.init(); saved values (best, tutorial flag, settings) apply when they arrive.
+- Phase 4, "in Telegram" = Telegram.WebApp has initData or a platform other than "unknown". The official script
+  also defines Telegram.WebApp in a plain browser, so merely having the object is not enough.
+- Phase 4, init order: ready(), expand(), disableVerticalSwipes() (>= 7.7), lockOrientation() (>= 8.0, only if the
+  app is opened in portrait, because Telegram locks the CURRENT orientation), theme + colours.
+- Phase 4, fullscreen: requestFullscreen() on the first tap, once, only on android / android_x / ios clients
+  (>= 8.0). Desktop clients keep their normal window. Errors are caught and ignored.
+- Phase 4, insets: per side = max(env(safe-area-inset), Telegram safeAreaInset) + contentSafeAreaInset (the
+  Telegram header buttons sit inside the safe area, so the two add up). Falls back to the --tg-*-inset-* CSS
+  variables if the JS objects are missing. Layout reruns on viewportChanged, safeAreaChanged,
+  contentSafeAreaChanged, fullscreenChanged and themeChanged. Height = min(innerHeight, viewportStableHeight).
+- Phase 4, theme: bg_color, text_color, button_color, button_text_color, hint_color, secondary_bg_color go to CSS
+  variables (--outer-bg, --outer-text, --tg-button, --tg-button-text, --tg-hint, --tg-secondary-bg); only
+  #hex values are accepted. Header colour = paper (hex needs 6.9, else "bg_color"); background and bottom bar =
+  theme bg_color. The canvas stays paper-white in dark mode.
+- Phase 4, haptics: light impact on every ollie (also buffered / button ollies), medium impact on a clean landing,
+  error notification on crash, success notification on a new best.
+- Phase 4, closing confirmation is on during playing, paused, crashed and settings-opened-from-pause; off on the
+  menu, tutorial and game-over screens.
+- Phase 4, MainButton "🛹 Play again" shows on game over once the buttons are live (0.3 s), hidden otherwise. The
+  in-canvas Play again button stays too (it is the only one in a browser). Showing the MainButton shrinks the
+  viewport, so the canvas rescales slightly on game over and back on play.
+- Phase 4, best score: max(localStorage, CloudStorage key "best"). Each CloudStorage call gives up after 1.5 s.
+  Whichever store is behind is updated. A lower score never overwrites a higher value. Flags and settings stay on
+  localStorage only.
+- Phase 4, share: openTelegramLink("https://t.me/share/url?url=...&text=..."). While BOT_USERNAME /
+  APP_SHORT_NAME are still placeholders, the page's own URL is shared instead of a broken t.me link. Outside
+  Telegram: navigator.share, then clipboard (as in Phase 3).
+- Phase 4, user name comes from initDataUnsafe.user.first_name (control chars stripped, max 20 chars),
+  fallback "Skater". Display only; nothing trusted is derived from it.
+- Phase 4, pause on visibilitychange and on Telegram's 'deactivated' event.
+- Phase 4, dev mock: ?tgmock=1 [&tgver=7.0] [&tgplatform=ios] [&tgname=Ada] [&tgtheme=dark] [&tgslow=1].
+  Old versions throw on unsupported calls, like the real WebApp. A DOM bar emulates the MainButton. Console:
+  __tgmock.log, .dark(), .light(), .deactivate(), .activate(), .emit('viewportChanged').
+  ?debug=1 also prints a "telegram ..." line.
 
 ## Known issues
-- Verified by the assistant in Node: `node --check` on all JS files; tests/scoring.mjs (11 tests) and
-  tests/fairness.mjs pass; headless runs of main.js with a fake DOM exercised menu, tutorial (flag saved),
-  swipe kickflip/spin with popups and combo, trick buttons, auto-pause, Esc pause, settings toggle (saved),
-  Space resume, crash, game over with NEW BEST, best saved, share clipboard fallback, play again, and a
-  4-minute autoplay run, all with no runtime errors.
-- Not verified: real browser rendering and fonts, the look of the trick animations, real-device fps, real
-  touch swipes and navigator.share on phones.
-- ~400-480 path segments per frame on average (peak ~600 with UI). Background subdivision can be reduced.
-- The fairness bot uses perfect timing; human comfort comes from the spacing constants.
+- Verified in Node by the assistant: `node --check` on main.js, tg.js, storage.js, dev-mock.js, config.js and the
+  new tests; tests/tg.mjs (18 tests) and tests/storage.mjs (7 tests) pass.
+- NOT run by the assistant in Phase 4: tests/scoring.mjs and tests/fairness.mjs (their game files were not in the
+  Phase 4 sandbox; Phase 4 does not touch physics, world or scoring), and any browser or Telegram session. main.js
+  was only syntax-checked, not executed.
+- Cannot be tested outside Telegram: real expand / fullscreen / orientation lock, real safe-area numbers, real
+  haptics, real CloudStorage, real share sheet, header/background colours. See the manual checklist in the
+  Phase 4 report.
+- The real telegram-web-app.js is loaded from telegram.org; offline, the game still works (tg.js no-ops).
+- MainButton changes the viewport height, so the canvas rescales a little on the game-over screen.
+- Not verified from earlier phases: real browser rendering and fonts, trick animation look, real-device fps,
+  real touch swipes and navigator.share on phones.
